@@ -30,6 +30,8 @@ class FAST_EXPORT ImagePyramid : public SpatialDataObject {
      * @param width Full width of image pyramid
      * @param height Full height of image pyramid
      * @param channels Nr of channels of image pyramid (3 == color (RGB), 1 == grayscale)
+     * @param widthList blablabla
+     * @param heightList blablabla
      * @param patchWidth Width of each patch
      * @param patchHeight Height of each patch
      * @param compression Compression type to use when storing the data in the TIFF.
@@ -39,15 +41,29 @@ class FAST_EXPORT ImagePyramid : public SpatialDataObject {
      * @return instance
      */
     FAST_CONSTRUCTOR(ImagePyramid,
-                     int, width,,
-                     int, height,,
-                     int, channels,,
+                     int, width, ,
+                     int, height, ,
+                     int, channels, ,
                      int, patchWidth, = 256,
                      int, patchHeight, = 256,
                      ImageCompression, compression, = ImageCompression::UNSPECIFIED,
                      int, compressionQuality, = 90,
                      DataType, dataType, = TYPE_UINT8
         );
+
+    FAST_CONSTRUCTOR(ImagePyramid,
+                     int, width,,
+                     int, height,,
+                     int, channels,,
+                     VectorXi, widthList,,
+                     VectorXi, heightList,,
+                     int, patchWidth, = 256,
+                     int, patchHeight, = 256,
+                     ImageCompression, compression, = ImageCompression::UNSPECIFIED,
+                     int, compressionQuality, = 90,
+                     DataType, dataType, = TYPE_UINT8
+        );
+
 #ifndef SWIG
         FAST_CONSTRUCTOR(ImagePyramid, openslide_t*, fileHandle,, std::vector<ImagePyramidLevel>, levels,);
         FAST_CONSTRUCTOR(ImagePyramid, TIFF*, fileHandle,, std::vector<ImagePyramidLevel>, levels,, int, channels,,bool, isOMETIFF, = false);
@@ -139,6 +155,8 @@ class FAST_EXPORT ImagePyramid : public SpatialDataObject {
         float m_decompressionOutputScaleFactor = 1.0f;
 
         float m_magnification = -1.0f;
+
+        int buildPyramidLevel(int currentLevel, int currentWidth, int currentHeight, int patchWidth, int patchHeight, uint photometric, uint bitsPerSample, uint samplesPerPixel, TIFF* tiff, ImageCompression compression, int widthThres = 4096, int heightThres = 4096);
 };
 
 }
