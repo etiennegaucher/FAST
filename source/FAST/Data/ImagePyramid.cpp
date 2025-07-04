@@ -30,6 +30,176 @@ namespace fast {
 int ImagePyramid::m_counter = 0;
 
 ImagePyramid::ImagePyramid(int width, int height, int channels, int patchWidth, int patchHeight, ImageCompression compression, int compressionQuality, DataType dataType) {
+    if (channels <= 0 || channels > 4)
+        throw Exception("Nr of channels must be between 1 and 4");
+
+    // Determine how many levels
+    int currentLevel = 0;
+    int currentWidth = width;
+    int currentHeight = height;
+    m_channels = channels;
+    m_tempFile = true;
+
+    do {
+        std::string randomString = generateRandomString(32);
+#ifdef WIN32
+        m_tiffPath = "C:/windows/temp/fast_image_pyramid_" + randomString + ".tiff";
+#else
+        m_tiffPath = "/tmp/fast_image_pyramid_" + randomString + ".tiff";
+#endif
+    } while (fileExists(m_tiffPath));
+
+    TIFFSetErrorHandler([](const char* module, const char* fmt, va_list ap) {
+        auto str = make_uninitialized_unique<char[]>(512);
+        sprintf(str.get(), fmt, ap);
+        std::string str2 = str.get();
+        if (strcmp(module, "TIFFAppendToStrip") == 0 && str2.substr(0, 23) == "Write error at scanline") // Suppress error when writing 0 byte patches
+            return;
+        Reporter::warning() << "TIFF error: " << module << ": " << str.get() << Reporter::end();
+        });
+    TIFFSetWarningHandler([](const char* module, const char* fmt, va_list ap) {
+        auto str = make_uninitialized_unique<char[]>(512);
+        sprintf(str.get(), fmt, ap);
+        Reporter::warning() << "TIFF warning: " << module << ": " << str.get() << Reporter::end();
+        });
+    m_tiffHandle = TIFFOpen(m_tiffPath.c_str(), "w8"); // 8 == Bigtiff (64 bit)
+    auto tiff = m_tiffHandle;
+    m_counter += 1;
+
+    uint photometric;
+    uint bitsPerSample = getSizeOfDataType(dataType, 1) * 8;
+    m_dataType = dataType;
+    uint samplesPerPixel;
+    if (channels == 1) {
+        photometric = PHOTOMETRIC_MINISBLACK; // Photometric mask causes crash..
+        samplesPerPixel = 1;
+        if (compression == ImageCompression::UNSPECIFIED)
+            compression = ImageCompression::LZW;
+    }
+    else {
+        if (compression == ImageCompression::UNSPECIFIED)
+            compression = ImageCompression::JPEG;
+        if (compression == ImageCompression::JPEG) {
+            photometric = PHOTOMETRIC_YCBCR; // JPEG is stored using YCBCR internally.
+            // If this is not set to YCBCR for JPEG, OpenSlide will not display FAST created WSI tiffs correctly.
+        }
+        else {
+            photometric = PHOTOMETRIC_RGB;
+        }
+        samplesPerPixel = 3; // RGBA image pyramid is converted to RGB with getPatchAsImage
+    }
+    m_compressionFormat = compression;
+    m_compressionQuality = compressionQuality;
+
+    while (true) {
+        currentWidth = width / std::pow(2, currentLevel);
+        currentHeight = height / std::pow(2, currentLevel);
+
+        int retVal = this->buildPyramidLevel(currentLevel, currentWidth, currentHeight, patchWidth, patchHeight, photometric, bitsPerSample, samplesPerPixel, tiff, compression);
+        //      if(currentLevel > 0 && (currentWidth < 256 && currentHeight < 256)) // IMPORTANT: This should be the same as in PatchStitcher.
+        //          break;
+
+        //      reportInfo() << "Processing level " << currentLevel << reportEnd();
+        //      std::size_t bytes = (std::size_t)currentWidth * currentHeight * m_channels * sizeof(char);
+
+        //      // Get total size of image
+        //      float sizeInMB = (float)bytes / (1024 * 1024);
+        //      reportInfo() << "WSI level size: " << currentWidth << ", " << currentHeight << ", " << m_channels << reportEnd();
+        //      reportInfo() << "WSI level size: " << sizeInMB << " MBs" << reportEnd();
+
+              //ImagePyramidLevel levelData;
+              //levelData.width = currentWidth;
+              //levelData.height = currentHeight;
+              //levelData.tileWidth = patchWidth;
+        //      levelData.tileHeight = patchHeight;
+        //      levelData.tilesX = std::ceil((float)levelData.width / levelData.tileWidth);
+        //      levelData.tilesY = std::ceil((float)levelData.height / levelData.tileHeight);
+
+        //      // Write base tags
+        //      TIFFSetField(tiff, TIFFTAG_PHOTOMETRIC, photometric);
+        //      TIFFSetField(tiff, TIFFTAG_BITSPERSAMPLE, bitsPerSample);
+        //      TIFFSetField(tiff, TIFFTAG_SAMPLEFORMAT, SAMPLEFORMAT_UINT);
+        //      TIFFSetField(tiff, TIFFTAG_SAMPLESPERPIXEL, samplesPerPixel);
+        //      TIFFSetField(tiff, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+        //      TIFFSetField(tiff, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT);
+
+        //      if(currentLevel > 0) {
+        //          // All levels except highest res level should have this tag?
+        //          TIFFSetField(tiff, TIFFTAG_SUBFILETYPE, FILETYPE_REDUCEDIMAGE);
+        //      }
+        //      switch(compression) {
+        //          case ImageCompression::RAW:
+        //              TIFFSetField(tiff, TIFFTAG_COMPRESSION, COMPRESSION_NONE);
+        //              break;
+        //          case ImageCompression::LZW:
+        //              TIFFSetField(tiff, TIFFTAG_COMPRESSION, COMPRESSION_LZW);
+        //              break;
+        //          case ImageCompression::JPEG:
+        //              TIFFSetField(tiff, TIFFTAG_COMPRESSION, COMPRESSION_JPEG);
+        //              /*
+        //              TIFFSetField(tiff, TIFFTAG_JPEGQUALITY, m_compressionQuality); // Must be set after previous line // FIXME not working, only 75 gives ok results
+        //              TIFFSetField(tiff, TIFFTAG_JPEGCOLORMODE, JPEGCOLORMODE_RGB);
+        //              TIFFSetField(tiff, TIFFTAG_JPEGTABLESMODE, JPEGTABLESMODE_QUANT);
+        //               */
+        //              break;
+        //          case ImageCompression::JPEGXL:
+        //              TIFFSetField(tiff, TIFFTAG_COMPRESSION, COMPRESSION_JXL);
+        //              break;
+        //          case ImageCompression::JPEG2000:
+        //              // TODO NOT IMPLEMENTED
+        //              throw NotImplementedException();
+        //              TIFFSetField(tiff, TIFFTAG_COMPRESSION, COMPRESSION_JP2000);
+        //              break;
+        //          case ImageCompression::NEURAL_NETWORK:
+        //              TIFFSetField(tiff, TIFFTAG_COMPRESSION, 34666); // TODO What should the value be?
+        //              break;
+        //      }
+
+        //      TIFFSetField(tiff, TIFFTAG_TILEWIDTH, levelData.tileWidth);
+        //      TIFFSetField(tiff, TIFFTAG_TILELENGTH, levelData.tileHeight);
+        //      TIFFSetField(tiff, TIFFTAG_IMAGEWIDTH, levelData.width);
+        //      TIFFSetField(tiff, TIFFTAG_IMAGELENGTH, levelData.height);
+
+              //m_levels.push_back(levelData);
+
+        //      // TODO need to initialize somehow?
+        //      // We need to write the first tile for some reason... or we will get an error saying it is missing required
+        //      // TileOffsets
+        //      TIFFCheckpointDirectory(m_tiffHandle); // Need to check in the tile width and length tags, before writing a tile
+        //      if(m_compressionFormat == ImageCompression::JPEGXL || m_compressionFormat == ImageCompression::JPEG) {
+        //          // TODO Not needed?
+        //          //auto data = std::make_unique<uchar[]>(samplesPerPixel); // Is initialized to zeros
+        //          //auto tileID = TIFFComputeTile(tiff, 0, 0, 0, 0);
+        //          //TIFFSetWriteOffset(tiff, 0); // Set write offset to 0, so that we dont appen data
+        //          //TIFFWriteRawTile(tiff, tileID, data.get(), samplesPerPixel);
+        //      } else {
+        //          auto data = std::make_unique<uchar[]>(levelData.tileWidth*levelData.tileHeight*samplesPerPixel); // Is initialized to zeros
+        //          TIFFWriteTile(tiff, data.get(), 0, 0, 0, 0);
+        //      }
+        //      /*
+        //      // TODO Do we really need to inititalize all tiles? This takes time..
+        //      for(int y = 0; y < levelData.tilesY; ++y) {
+        //          for(int x = 0; x < levelData.tilesX; ++x) {
+        //              TIFFWriteTile(tiff, data.get(), x*levelData.tileWidth, y*levelData.tileHeight, 0, 0);
+        //          }
+              //}*/
+        //      // END
+
+        //      TIFFWriteDirectory(m_tiffHandle);
+              //reportInfo() << "Done creating level " << currentLevel << reportEnd();
+        if (retVal == -1) {
+            break;
+        }
+        ++currentLevel;
+    }
+
+    mBoundingBox = DataBoundingBox(Vector3f(getFullWidth(), getFullHeight(), 0));
+    m_initialized = true;
+    m_pyramidFullyInitialized = false;
+    m_counter += 1;
+}
+
+ImagePyramid::ImagePyramid(int width, int height, int channels, VectorXi widthList, VectorXi heightList, int patchWidth, int patchHeight, ImageCompression compression, int compressionQuality, DataType dataType) {
     if(channels <= 0 || channels > 4)
         throw Exception("Nr of channels must be between 1 and 4");
 
@@ -89,12 +259,27 @@ ImagePyramid::ImagePyramid(int width, int height, int channels, int patchWidth, 
     m_compressionFormat = compression;
     m_compressionQuality = compressionQuality;
 
-    while(true) {
-		currentWidth = width / std::pow(2, currentLevel);
-		currentHeight = height / std::pow(2, currentLevel);
+    for (int i = 0; i < widthList.size(); i++) {
+        currentWidth = widthList[i];
+        currentHeight = heightList[i];
 
-        if(currentLevel > 0 && (currentWidth < 256 && currentHeight < 256)) // IMPORTANT: This should be the same as in PatchStitcher.
-            break;
+        this->buildPyramidLevel(currentLevel, currentWidth, currentHeight, patchWidth, patchHeight, photometric, bitsPerSample, samplesPerPixel, tiff, compression, 256, 256);
+		++currentLevel;
+    }
+
+    mBoundingBox = DataBoundingBox(Vector3f(getFullWidth(), getFullHeight(), 0));
+    m_initialized = true;
+    m_pyramidFullyInitialized = false;
+	m_counter += 1;
+}
+
+int ImagePyramid::buildPyramidLevel(int currentLevel, int currentWidth, int currentHeight, int patchWidth, int patchHeight, uint photometric, uint bitsPerSample, uint samplesPerPixel, TIFF* tiff, ImageCompression compression, int widthThres, int heightThres)
+{
+    int retVal = 0;
+    if (currentLevel > 0 && (currentWidth < widthThres && currentHeight < heightThres)) {
+        retVal = -1;
+    }
+    else {
 
         reportInfo() << "Processing level " << currentLevel << reportEnd();
         std::size_t bytes = (std::size_t)currentWidth * currentHeight * m_channels * sizeof(char);
@@ -104,10 +289,10 @@ ImagePyramid::ImagePyramid(int width, int height, int channels, int patchWidth, 
         reportInfo() << "WSI level size: " << currentWidth << ", " << currentHeight << ", " << m_channels << reportEnd();
         reportInfo() << "WSI level size: " << sizeInMB << " MBs" << reportEnd();
 
-		ImagePyramidLevel levelData;
-		levelData.width = currentWidth;
-		levelData.height = currentHeight;
-		levelData.tileWidth = patchWidth;
+        ImagePyramidLevel levelData;
+        levelData.width = currentWidth;
+        levelData.height = currentHeight;
+        levelData.tileWidth = patchWidth;
         levelData.tileHeight = patchHeight;
         levelData.tilesX = std::ceil((float)levelData.width / levelData.tileWidth);
         levelData.tilesY = std::ceil((float)levelData.height / levelData.tileHeight);
@@ -125,31 +310,31 @@ ImagePyramid::ImagePyramid(int width, int height, int channels, int patchWidth, 
             TIFFSetField(tiff, TIFFTAG_SUBFILETYPE, FILETYPE_REDUCEDIMAGE);
         }
         switch(compression) {
-            case ImageCompression::RAW:
-                TIFFSetField(tiff, TIFFTAG_COMPRESSION, COMPRESSION_NONE);
-                break;
-            case ImageCompression::LZW:
-                TIFFSetField(tiff, TIFFTAG_COMPRESSION, COMPRESSION_LZW);
-                break;
-            case ImageCompression::JPEG:
-                TIFFSetField(tiff, TIFFTAG_COMPRESSION, COMPRESSION_JPEG);
-                /*
-                TIFFSetField(tiff, TIFFTAG_JPEGQUALITY, m_compressionQuality); // Must be set after previous line // FIXME not working, only 75 gives ok results
-                TIFFSetField(tiff, TIFFTAG_JPEGCOLORMODE, JPEGCOLORMODE_RGB);
-                TIFFSetField(tiff, TIFFTAG_JPEGTABLESMODE, JPEGTABLESMODE_QUANT);
-                 */
-                break;
-            case ImageCompression::JPEGXL:
-                TIFFSetField(tiff, TIFFTAG_COMPRESSION, COMPRESSION_JXL);
-                break;
-            case ImageCompression::JPEG2000:
-                // TODO NOT IMPLEMENTED
-                throw NotImplementedException();
-                TIFFSetField(tiff, TIFFTAG_COMPRESSION, COMPRESSION_JP2000);
-                break;
-            case ImageCompression::NEURAL_NETWORK:
-                TIFFSetField(tiff, TIFFTAG_COMPRESSION, 34666); // TODO What should the value be?
-                break;
+        case ImageCompression::RAW:
+            TIFFSetField(tiff, TIFFTAG_COMPRESSION, COMPRESSION_NONE);
+            break;
+        case ImageCompression::LZW:
+            TIFFSetField(tiff, TIFFTAG_COMPRESSION, COMPRESSION_LZW);
+            break;
+        case ImageCompression::JPEG:
+            TIFFSetField(tiff, TIFFTAG_COMPRESSION, COMPRESSION_JPEG);
+            /*
+            TIFFSetField(tiff, TIFFTAG_JPEGQUALITY, m_compressionQuality); // Must be set after previous line // FIXME not working, only 75 gives ok results
+            TIFFSetField(tiff, TIFFTAG_JPEGCOLORMODE, JPEGCOLORMODE_RGB);
+            TIFFSetField(tiff, TIFFTAG_JPEGTABLESMODE, JPEGTABLESMODE_QUANT);
+             */
+            break;
+        case ImageCompression::JPEGXL:
+            TIFFSetField(tiff, TIFFTAG_COMPRESSION, COMPRESSION_JXL);
+            break;
+        case ImageCompression::JPEG2000:
+            // TODO NOT IMPLEMENTED
+            throw NotImplementedException();
+            TIFFSetField(tiff, TIFFTAG_COMPRESSION, COMPRESSION_JP2000);
+            break;
+        case ImageCompression::NEURAL_NETWORK:
+            TIFFSetField(tiff, TIFFTAG_COMPRESSION, 34666); // TODO What should the value be?
+            break;
         }
 
         TIFFSetField(tiff, TIFFTAG_TILEWIDTH, levelData.tileWidth);
@@ -157,7 +342,7 @@ ImagePyramid::ImagePyramid(int width, int height, int channels, int patchWidth, 
         TIFFSetField(tiff, TIFFTAG_IMAGEWIDTH, levelData.width);
         TIFFSetField(tiff, TIFFTAG_IMAGELENGTH, levelData.height);
 
-		m_levels.push_back(levelData);
+        m_levels.push_back(levelData);
 
         // TODO need to initialize somehow?
         // We need to write the first tile for some reason... or we will get an error saying it is missing required
@@ -169,8 +354,9 @@ ImagePyramid::ImagePyramid(int width, int height, int channels, int patchWidth, 
             //auto tileID = TIFFComputeTile(tiff, 0, 0, 0, 0);
             //TIFFSetWriteOffset(tiff, 0); // Set write offset to 0, so that we dont appen data
             //TIFFWriteRawTile(tiff, tileID, data.get(), samplesPerPixel);
-        } else {
-            auto data = std::make_unique<uchar[]>(levelData.tileWidth*levelData.tileHeight*samplesPerPixel); // Is initialized to zeros
+        }
+        else {
+            auto data = std::make_unique<uchar[]>(levelData.tileWidth * levelData.tileHeight * samplesPerPixel); // Is initialized to zeros
             TIFFWriteTile(tiff, data.get(), 0, 0, 0, 0);
         }
         /*
@@ -179,18 +365,13 @@ ImagePyramid::ImagePyramid(int width, int height, int channels, int patchWidth, 
             for(int x = 0; x < levelData.tilesX; ++x) {
                 TIFFWriteTile(tiff, data.get(), x*levelData.tileWidth, y*levelData.tileHeight, 0, 0);
             }
-		}*/
+        }*/
         // END
 
         TIFFWriteDirectory(m_tiffHandle);
-		reportInfo() << "Done creating level " << currentLevel << reportEnd();
-		++currentLevel;
+        reportInfo() << "Done creating level " << currentLevel << reportEnd();
     }
-
-    mBoundingBox = DataBoundingBox(Vector3f(getFullWidth(), getFullHeight(), 0));
-    m_initialized = true;
-    m_pyramidFullyInitialized = false;
-	m_counter += 1;
+    return retVal;
 }
 
 ImagePyramid::ImagePyramid(openslide_t *fileHandle, std::vector<ImagePyramidLevel> levels) {
